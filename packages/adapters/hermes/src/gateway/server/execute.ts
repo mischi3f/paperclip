@@ -6,6 +6,7 @@ import type {
 import {
   asNumber,
   asString,
+  buildPaperclipEnv,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   selectPaperclipPromptSections,
@@ -67,12 +68,55 @@ const CRITICAL_HEADERS = new Set([
   "x-hermes-session-key",
 ]);
 
-const SENSITIVE_KEY_PATTERN =
-  /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)/i;
+const SENSITIVE_KEY_SUFFIXES = [
+  "token",
+  "secret",
+  "password",
+  "passwd",
+  "credential",
+  "credentials",
+  "authorization",
+  "cookie",
+  "cookies",
+  "apikey",
+  "privatekey",
+  "authorizationheader",
+  "cookieheader",
+  "tokenvalue",
+  "secretvalue",
+  "passwordvalue",
+  "passwdvalue",
+  "credentialvalue",
+  "apikeyvalue",
+  "privatekeyvalue",
+  "passwordhash",
+  "passwdhash",
+] as const;
+const SENSITIVE_KEY_EXACT = new Set([
+  "auth",
+  "bearer",
+]);
 const BEARER_TOKEN_PATTERN = /Bearer\s+\S+/gi;
 const HERMES_SESSION_KEY_HEADER_PATTERN = /(X-Hermes-Session-Key\s*[:=]\s*)([^\s,;]+)/gi;
 const PAPERCLIP_SESSION_KEY_PATTERN =
   /\bpaperclip:(?:company:[A-Za-z0-9-]+:agent:[A-Za-z0-9-]+(?::(?:issue|run):[A-Za-z0-9-]+)?|run:[A-Za-z0-9-]+)\b/gi;
+const URL_CREDENTIAL_KEY_SUFFIXES = [
+  "signature",
+  "credential",
+  "credentials",
+  "token",
+  "key",
+  "secret",
+  "password",
+  "auth",
+] as const;
+const URL_CREDENTIAL_KEY_EXACT = new Set([
+  "authcode",
+  "oauth",
+  "oauthcode",
+  "passphrase",
+  "sig",
+]);
 
 const TERMINAL_STATUSES = new Set([
   "completed",
@@ -96,6 +140,23 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function nonEmpty(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeSensitiveKeyName(key: string): string {
+  return key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function isSensitiveKey(key: string): boolean {
+  const normalized = normalizeSensitiveKeyName(key);
+  if (!normalized) return false;
+  if (SENSITIVE_KEY_EXACT.has(normalized)) return true;
+  return SENSITIVE_KEY_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
+}
+
+function isUrlCredentialKey(key: string): boolean {
+  const normalized = normalizeSensitiveKeyName(key);
+  return URL_CREDENTIAL_KEY_EXACT.has(normalized) ||
+    URL_CREDENTIAL_KEY_SUFFIXES.some((suffix) => normalized.endsWith(suffix));
 }
 
 function parseNonNegativeNumber(value: unknown, fallback: number): number {
@@ -122,6 +183,7 @@ function normalizeBaseUrl(value: string): URL | null {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (url.username || url.password) return null;
     const normalizedPath = url.pathname.replace(/\/+$/, "") || "/";
     if (
       url.port === DEFAULT_HERMES_DASHBOARD_PORT &&
@@ -137,6 +199,99 @@ function normalizeBaseUrl(value: string): URL | null {
   } catch {
     return null;
   }
+}
+
+type WorkspaceRepoUrl = {
+  canonicalUrl: string | null;
+  secrets: string[];
+  invalid: boolean;
+};
+
+function addUrlSecretVariants(secrets: Set<string>, value: string): void {
+  if (!value) return;
+  secrets.add(value);
+  try {
+    const decoded = decodeURIComponent(value.replace(/\+/g, " "));
+    if (decoded) {
+      secrets.add(decoded);
+      secrets.add(encodeURIComponent(decoded));
+      const formEncoded = new URLSearchParams({ value: decoded }).toString().slice("value=".length);
+      if (formEncoded) secrets.add(formEncoded);
+    }
+  } catch {
+    // Keep the original literal when percent-decoding malformed input fails.
+  }
+}
+
+function sanitizeWorkspaceRepoUrl(value: unknown): WorkspaceRepoUrl {
+  const raw = nonEmpty(value);
+  if (!raw) return { canonicalUrl: null, secrets: [], invalid: false };
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    // Preserve scp-like Git remotes and local paths, but do not forward malformed
+    // scheme URLs whose authority/userinfo cannot be assessed safely.
+    return /^[a-z][a-z0-9+.-]*:\/\//i.test(raw)
+      ? { canonicalUrl: null, secrets: [], invalid: true }
+      : { canonicalUrl: raw, secrets: [], invalid: false };
+  }
+
+  const authorityMatch = raw.match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i);
+  const authority = authorityMatch?.[1] ?? "";
+  const atIndex = authority.lastIndexOf("@");
+  const rawUserinfo = atIndex >= 0 ? authority.slice(0, atIndex) : "";
+  let decodedUserinfo = rawUserinfo;
+  try {
+    decodedUserinfo = decodeURIComponent(rawUserinfo);
+  } catch {
+    if (rawUserinfo) return { canonicalUrl: null, secrets: [], invalid: true };
+  }
+  const hasPasswordAmbiguity = Boolean(url.password) || rawUserinfo.includes(":") || decodedUserinfo.includes(":");
+  if (hasPasswordAmbiguity) return { canonicalUrl: null, secrets: [], invalid: true };
+
+  const isSshProtocol = url.protocol === "ssh:" || url.protocol === "git+ssh:";
+  if (url.username && !isSshProtocol) return { canonicalUrl: null, secrets: [], invalid: true };
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return { canonicalUrl: raw, secrets: [], invalid: false };
+  }
+  if (url.username || url.password) {
+    return { canonicalUrl: null, secrets: [], invalid: true };
+  }
+
+  const secrets = new Set<string>();
+  let removedCredential = false;
+  for (const key of [...url.searchParams.keys()]) {
+    if (!isUrlCredentialKey(key)) continue;
+    for (const entry of url.searchParams.getAll(key)) addUrlSecretVariants(secrets, entry);
+    url.searchParams.delete(key);
+    removedCredential = true;
+  }
+
+  if (url.hash.length > 1) {
+    const fragmentParams = new URLSearchParams(url.hash.slice(1));
+    let removedFragmentCredential = false;
+    for (const key of [...fragmentParams.keys()]) {
+      if (!isUrlCredentialKey(key)) continue;
+      for (const entry of fragmentParams.getAll(key)) addUrlSecretVariants(secrets, entry);
+      fragmentParams.delete(key);
+      removedCredential = true;
+      removedFragmentCredential = true;
+    }
+    if (removedFragmentCredential) {
+      const sanitizedFragment = fragmentParams.toString();
+      url.hash = sanitizedFragment ? `#${sanitizedFragment}` : "";
+    }
+  }
+
+  if (removedCredential) secrets.add(raw);
+  return {
+    canonicalUrl: url.toString(),
+    secrets: [...secrets],
+    invalid: false,
+  };
 }
 
 function apiUrl(baseUrl: URL, path: string): string {
@@ -182,8 +337,14 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function createTextRedactor(secrets: Array<string | null | undefined>): TextRedactor {
-  const exactSecrets = [...new Set(secrets.filter((secret): secret is string => typeof secret === "string" && secret.length >= 4))]
+function createTextRedactor(
+  secrets: Array<string | null | undefined>,
+  exactLiterals: Array<string | null | undefined> = [],
+): TextRedactor {
+  const exactSecrets = [...new Set([
+    ...secrets.filter((secret): secret is string => typeof secret === "string" && secret.length >= 4),
+    ...exactLiterals.filter((secret): secret is string => typeof secret === "string" && secret.length > 0),
+  ])]
     .sort((a, b) => b.length - a.length)
     .map((secret) => ({
       secret,
@@ -201,8 +362,10 @@ function createTextRedactor(secrets: Array<string | null | undefined>): TextReda
 
 function redactForLog(value: unknown, keyPath: string[] = [], depth = 0, redactText: TextRedactor = sanitizeSensitiveText): unknown {
   const key = keyPath[keyPath.length - 1] ?? "";
+  if (isSensitiveKey(key)) {
+    return typeof value === "string" ? `[redacted len=${value.length}]` : "[redacted]";
+  }
   if (typeof value === "string") {
-    if (SENSITIVE_KEY_PATTERN.test(key)) return `[redacted len=${value.length}]`;
     const sanitized = redactText(value);
     return sanitized.length > 500
       ? `${sanitized.slice(0, 500)}... [truncated ${sanitized.length - 500} chars]`
@@ -215,11 +378,20 @@ function redactForLog(value: unknown, keyPath: string[] = [], depth = 0, redactT
   }
   if (typeof value === "object") {
     if (depth > 5) return "[object-truncated]";
-    const out: Record<string, unknown> = {};
+    const entries: Array<[string, unknown]> = [];
+    const usedKeys = new Set<string>();
     for (const [entryKey, entryValue] of Object.entries(value as Record<string, unknown>).slice(0, 80)) {
-      out[entryKey] = redactForLog(entryValue, [...keyPath, entryKey], depth + 1, redactText);
+      const redactedKey = redactText(entryKey);
+      let outputKey = redactedKey;
+      let collision = 2;
+      while (usedKeys.has(outputKey)) {
+        outputKey = `${redactedKey} [collision ${collision}]`;
+        collision += 1;
+      }
+      usedKeys.add(outputKey);
+      entries.push([outputKey, redactForLog(entryValue, [...keyPath, entryKey], depth + 1, redactText)]);
     }
-    return out;
+    return Object.fromEntries(entries);
   }
   return redactText(String(value));
 }
@@ -321,7 +493,11 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
   return lines.filter((line) => line !== null && line !== undefined).join("\n").trim();
 }
 
-function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
+function buildRunBody(
+  ctx: AdapterExecutionContext,
+  sessionKey: string | null,
+  workspaceRepoUrl: string | null,
+): Record<string, unknown> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const configuredInput = nonEmpty(payloadTemplate.input);
@@ -332,11 +508,60 @@ function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): 
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
     "Follow the Paperclip wake instructions exactly. Do not expose secrets in logs, comments, or final output.";
+  const configuredEnv = parseObject(ctx.config.env);
+  const environment: Record<string, string> = {};
+  for (const key of ["GH_TOKEN", "GIT_ASKPASS", "GIT_TERMINAL_PROMPT"] as const) {
+    const value = nonEmpty(configuredEnv[key]);
+    if (value) environment[key] = value;
+  }
+  Object.assign(environment, buildPaperclipEnv(ctx.agent));
+  environment.PAPERCLIP_RUN_ID = ctx.runId;
+
+  const taskId = nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
+  if (taskId) environment.PAPERCLIP_TASK_ID = taskId;
+  const wakeReason = nonEmpty(ctx.context.wakeReason);
+  if (wakeReason) environment.PAPERCLIP_WAKE_REASON = wakeReason;
+  const commentId = nonEmpty(ctx.context.commentId) ?? nonEmpty(ctx.context.wakeCommentId);
+  if (commentId) environment.PAPERCLIP_WAKE_COMMENT_ID = commentId;
+  const workspace = parseObject(ctx.context.paperclipWorkspace);
+  const projectId = nonEmpty(workspace.projectId) ?? nonEmpty(ctx.context.projectId);
+  if (projectId) environment.PAPERCLIP_PROJECT_ID = projectId;
+  const approvalId = nonEmpty(ctx.context.approvalId);
+  if (approvalId) environment.PAPERCLIP_APPROVAL_ID = approvalId;
+  const approvalStatus = nonEmpty(ctx.context.approvalStatus);
+  if (approvalStatus) environment.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
+  const linkedIssueIds = Array.isArray(ctx.context.issueIds)
+    ? ctx.context.issueIds.flatMap((value) => {
+        const issueId = nonEmpty(value);
+        return issueId ? [issueId] : [];
+      })
+    : [];
+  if (linkedIssueIds.length > 0) environment.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+
+  const workspaceMappings = [
+    ["PAPERCLIP_WORKSPACE_CWD", workspace.cwd],
+    ["PAPERCLIP_WORKSPACE_SOURCE", workspace.source],
+    ["PAPERCLIP_WORKSPACE_STRATEGY", workspace.strategy],
+    ["PAPERCLIP_WORKSPACE_ID", workspace.workspaceId],
+    ["PAPERCLIP_WORKSPACE_REPO_URL", workspaceRepoUrl],
+    ["PAPERCLIP_WORKSPACE_REPO_REF", workspace.repoRef],
+    ["PAPERCLIP_WORKSPACE_BRANCH", workspace.branchName],
+    ["PAPERCLIP_WORKSPACE_WORKTREE_PATH", workspace.worktreePath],
+  ] as const;
+  for (const [key, rawValue] of workspaceMappings) {
+    const value = nonEmpty(rawValue);
+    if (value) environment[key] = value;
+  }
+
+  if (paperclipApiUrl) environment.PAPERCLIP_API_URL = paperclipApiUrl;
+  if (ctx.authToken) environment.PAPERCLIP_API_KEY = ctx.authToken;
+
   return {
     ...payloadTemplate,
     input,
     instructions,
     ...(sessionKey ? { session_id: sessionKey } : {}),
+    environment,
   };
 }
 
@@ -370,6 +595,28 @@ function fetchFailureMessage(err: unknown): string {
   return causeCode ? `${message} (${causeCode}: ${causeMessage})` : `${message} (${causeMessage})`;
 }
 
+function parseRetryAfter(value: string | null, nowMs = Date.now()): string | null {
+  if (value === null) return null;
+  const raw = value.trim();
+  if (/^\d+$/.test(raw)) {
+    const seconds = Number(raw);
+    if (!Number.isSafeInteger(seconds)) return null;
+    const retryAtMs = nowMs + seconds * 1_000;
+    if (!Number.isSafeInteger(retryAtMs)) return null;
+    const retryAt = new Date(retryAtMs);
+    return Number.isNaN(retryAt.getTime()) ? null : retryAt.toISOString();
+  }
+
+  if (!/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(raw)) {
+    return null;
+  }
+  const retryAtMs = Date.parse(raw);
+  if (!Number.isFinite(retryAtMs)) return null;
+  const retryAt = new Date(retryAtMs);
+  if (retryAt.toUTCString() !== raw) return null;
+  return retryAt.toISOString();
+}
+
 async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
@@ -385,7 +632,7 @@ async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<u
     const err = new Error(`Hermes gateway HTTP ${response.status}`) as HermesHttpError;
     err.status = response.status;
     err.code = classified.code;
-    err.retryNotBefore = response.headers.get("retry-after");
+    err.retryNotBefore = parseRetryAfter(response.headers.get("retry-after"));
     err.body = body;
     throw err;
   }
@@ -484,9 +731,11 @@ async function handleEvent(
   const record = asRecord(parsed);
   const eventName = eventNameFromData(parsed, frame.event);
   state.lastEventName = eventName;
+  const runDisplayId = redactText(state.runId);
+  const eventDisplayName = eventName ? redactText(eventName) : "message";
   await ctx.onLog(
     "stdout",
-    `[hermes-gateway:event] run=${state.runId} event=${eventName ?? "message"} data=${stringifyForLog(redactForLog(parsed, [], 0, redactText), 8_000)}\n`,
+    `[hermes-gateway:event] run=${runDisplayId} event=${eventDisplayName} data=${stringifyForLog(redactForLog(parsed, [], 0, redactText), 8_000)}\n`,
   );
 
   const delta = nonEmpty(record?.delta) ?? nonEmpty(record?.text_delta);
@@ -676,6 +925,9 @@ export function mapFinalResultForTest(input: {
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
+  const runDisplayId = redactText(input.terminal.runId);
+  const eventDisplayName = input.terminal.eventName ? redactText(input.terminal.eventName) : null;
+  const model = extractModel(payload);
   const errorMessage = mapped.errorCode
     ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
@@ -684,7 +936,7 @@ export function mapFinalResultForTest(input: {
     signal: mapped.signal,
     timedOut: false,
     provider: "hermes_gateway",
-    model: extractModel(payload),
+    model: model ? redactText(model) : null,
     ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(usage ? { usage } : {}),
@@ -692,16 +944,16 @@ export function mapFinalResultForTest(input: {
     ...(output ? { summary: output.slice(0, 2_000) } : {}),
     sessionId: sessionDisplayId,
     sessionParams: {
-      hermesRunId: input.terminal.runId,
+      hermesRunId: runDisplayId,
       ...(sessionId && sessionDisplayId === sessionId ? { hermesSessionId: sessionId } : {}),
       strategy: input.strategy,
     },
     sessionDisplayId,
     resultJson: {
-      run_id: input.terminal.runId,
-      status: input.terminal.status,
+      run_id: runDisplayId,
+      status: redactText(input.terminal.status),
       session_id: sessionDisplayId,
-      last_event: input.terminal.eventName ?? null,
+      last_event: eventDisplayName,
       output: output ?? "",
       usage: usage ?? null,
       cost_usd: costUsd,
@@ -721,7 +973,7 @@ async function stopRun(input: {
       method: "POST",
       headers: input.headers,
     });
-    await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
+    await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${(input.redactText ?? sanitizeSensitiveText)(input.runId)}\n`);
     return asRecord(stopped);
   } catch (err) {
     await input.ctx.onLog("stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err, input.redactText)}\n`);
@@ -799,7 +1051,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       signal: null,
       timedOut: false,
       errorCode: "hermes_gateway_api_base_url_invalid",
-      errorMessage: `Invalid Hermes gateway apiBaseUrl: ${apiBaseUrlValue}`,
+      errorMessage: "Invalid Hermes gateway apiBaseUrl.",
     };
   }
   if (isRemotePlainHttp(baseUrl) && !allowsInsecureRemoteHttp(ctx.config)) {
@@ -809,6 +1061,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "hermes_gateway_plain_http_remote_denied",
       errorMessage: remotePlainHttpDeniedMessage(baseUrl.hostname),
+    };
+  }
+
+  const workspace = parseObject(ctx.context.paperclipWorkspace);
+  const workspaceRepoUrl = sanitizeWorkspaceRepoUrl(workspace.repoUrl);
+  if (workspaceRepoUrl.invalid) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "hermes_gateway_workspace_repo_url_invalid",
+      errorMessage: "Paperclip workspace repo URL must be valid and credential-free.",
     };
   }
 
@@ -851,13 +1115,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     extraHeaders,
     accept: "text/event-stream",
   });
-  const redactText = createTextRedactor([
-    apiKey,
-    sessionKey,
-    runHeaders.Authorization,
-    runHeaders["X-Hermes-Session-Key"],
-  ]);
-  const body = buildRunBody(ctx, sessionKey);
+  const body = buildRunBody(ctx, sessionKey, workspaceRepoUrl.canonicalUrl);
+  const bodyEnvironment = parseObject(body.environment);
+  const redactText = createTextRedactor(
+    [
+      apiKey,
+      sessionKey,
+      runHeaders.Authorization,
+      runHeaders["X-Hermes-Session-Key"],
+      nonEmpty(bodyEnvironment.PAPERCLIP_API_KEY),
+      nonEmpty(bodyEnvironment.GH_TOKEN),
+    ],
+    [...Object.values(extraHeaders), ...workspaceRepoUrl.secrets],
+  );
   const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
@@ -901,7 +1171,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return errorResult(err, redactText);
   }
 
-  await ctx.onLog("stdout", `[hermes-gateway] run created: ${runId}\n`);
+  await ctx.onLog("stdout", `[hermes-gateway] run created: ${redactText(runId)}\n`);
 
   const state = createExecutionState(runId);
   const controller = new AbortController();
@@ -937,6 +1207,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (outcome === "timeout") {
     await stopRun({ ctx, baseUrl, headers: eventHeaders, runId, redactText });
     const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
+    const runDisplayId = redactText(runId);
+    const lastEventDisplayName = state.lastEventName ? redactText(state.lastEventName) : null;
+    const finalStatusName = extractStatus(finalStatus);
     return {
       exitCode: 1,
       signal: null,
@@ -945,13 +1218,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage: `Hermes gateway run timed out after ${timeoutSec}s.`,
       provider: "hermes_gateway",
       resultJson: {
-        run_id: runId,
-        status: extractStatus(finalStatus) ?? "timeout",
-        last_event: state.lastEventName,
+        run_id: runDisplayId,
+        status: finalStatusName ? redactText(finalStatusName) : "timeout",
+        last_event: lastEventDisplayName,
         final_status: redactForLog(finalStatus, [], 0, redactText),
       },
       sessionParams: {
-        hermesRunId: runId,
+        hermesRunId: runDisplayId,
         strategy,
       },
       sessionDisplayId: sessionKey ? redactText(sessionKey) : null,

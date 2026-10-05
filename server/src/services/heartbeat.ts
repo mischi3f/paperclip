@@ -3150,6 +3150,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
   );
   const agentFallbackCwd = resolveDefaultAgentWorkspaceDir(input.agentId);
   const workspaceExpectation =
+    Boolean(issue.projectId) ||
     Boolean(issue.projectWorkspaceId) ||
     Boolean(input.resolvedWorkspace.workspaceId) ||
     input.executionWorkspace.strategy === "git_worktree";

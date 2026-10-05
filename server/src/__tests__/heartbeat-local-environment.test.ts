@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
@@ -16,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { verifyLocalAgentJwt } from "../agent-auth-jwt.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -223,5 +226,93 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       apiKeyPresent: true,
     });
     expect(captured.apiUrl).toEqual(expect.stringMatching(/^https?:\/\//));
+  });
+
+  it("mints and projects a run-scoped JWT through the real Hermes gateway heartbeat path", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    let projectedEnvironment: Record<string, string> | null = null;
+    const gateway = createServer((req, res) => {
+      if (req.method === "POST" && req.url === "/v1/runs") {
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        req.on("end", () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+            environment?: Record<string, string>;
+          };
+          projectedEnvironment = body.environment ?? null;
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ run_id: "hermes-run-1" }));
+        });
+        return;
+      }
+      if (req.method === "GET" && req.url === "/v1/runs/hermes-run-1/events") {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end('event: run.completed\ndata: {"status":"completed","output":"done"}\n\n');
+        return;
+      }
+      if (req.method === "GET" && req.url === "/v1/runs/hermes-run-1") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ status: "completed", output: "done" }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const port = (gateway.address() as AddressInfo).port;
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "HermesGatewayAgent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "hermes_gateway",
+        adapterConfig: {
+          apiBaseUrl: `http://127.0.0.1:${port}`,
+          apiKey: "gateway-test-key",
+          paperclipApiUrl: "http://paperclip.test/api",
+          timeoutSec: 5,
+          pollIntervalMs: 250,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+      expect(queued).not.toBeNull();
+      const finished = await waitForRunToFinish(heartbeat, queued!.id);
+
+      expect(finished?.status).toBe("succeeded");
+      expect(projectedEnvironment).not.toBeNull();
+      const token = projectedEnvironment?.PAPERCLIP_API_KEY;
+      expect(token).toEqual(expect.any(String));
+      expect(token).not.toBe("");
+      expect(token).not.toBe("gateway-test-key");
+      expect(verifyLocalAgentJwt(token!)).toMatchObject({
+        sub: agentId,
+        company_id: companyId,
+        adapter_type: "hermes_gateway",
+        run_id: queued!.id,
+        responsible_user_id: "responsible-user",
+      });
+      expect(projectedEnvironment).toMatchObject({
+        PAPERCLIP_AGENT_ID: agentId,
+        PAPERCLIP_COMPANY_ID: companyId,
+        PAPERCLIP_RUN_ID: queued!.id,
+        PAPERCLIP_API_URL: "http://paperclip.test/api",
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => gateway.close((error) => error ? reject(error) : resolve()));
+    }
   });
 });

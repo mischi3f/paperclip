@@ -29,9 +29,12 @@ function normalizeBaseUrl(value: string): URL | null {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (url.username || url.password) return null;
     if (isDefaultDashboardApiEntry(url)) {
       url.pathname = "/api";
     }
+    url.search = "";
+    url.hash = "";
     return url;
   } catch {
     return null;

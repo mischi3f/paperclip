@@ -444,6 +444,186 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     );
   });
 
+  it.each(["default", "project_primary"] as const)(
+    "rejects a project-bound git-sensitive local adapter resolved from non-Git agent_home with %s strategy",
+    async (strategy) => {
+      const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-agent-home-no-git-"));
+      const input = buildWorkspaceValidationInput();
+      try {
+        await expectWorkspaceValidationFailure(
+          buildWorkspaceValidationInput({
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-1",
+              projectId: "project-1",
+              projectWorkspaceId: null,
+            },
+            resolvedWorkspace: buildResolvedWorkspace({
+              cwd,
+              source: "agent_home",
+              projectId: "project-1",
+              workspaceId: null,
+            }),
+            executionWorkspace: {
+              ...input.executionWorkspace,
+              baseCwd: cwd,
+              source: "agent_home",
+              projectId: "project-1",
+              workspaceId: null,
+              strategy,
+              cwd,
+            },
+            persistedExecutionWorkspace: {
+              ...input.persistedExecutionWorkspace!,
+              cwd,
+              projectId: "project-1",
+              projectWorkspaceId: null,
+              strategyType: strategy,
+            },
+          }),
+          "missing_git_metadata",
+          "has no .git metadata",
+        );
+      } finally {
+        await fs.rm(cwd, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("allows a project-bound git-sensitive local adapter resolved from agent_home when it is a real Git checkout", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    const input = buildWorkspaceValidationInput();
+    try {
+      await expect(assertGitSensitiveAdapterWorkspaceValid(buildWorkspaceValidationInput({
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: null,
+        },
+        resolvedWorkspace: buildResolvedWorkspace({
+          cwd,
+          source: "agent_home",
+          projectId: "project-1",
+          workspaceId: null,
+        }),
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          baseCwd: cwd,
+          source: "agent_home",
+          projectId: "project-1",
+          workspaceId: null,
+          strategy: "default",
+          cwd,
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          cwd,
+          projectId: "project-1",
+          projectWorkspaceId: null,
+          strategyType: "default",
+        },
+      }))).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves projectless git-sensitive work that does not declare a Git workspace requirement", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-projectless-agent-home-"));
+    try {
+      await expect(assertGitSensitiveAdapterWorkspaceValid(buildWorkspaceValidationInput({
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: null,
+          projectWorkspaceId: null,
+        },
+        resolvedWorkspace: buildResolvedWorkspace({
+          cwd,
+          source: "agent_home",
+          projectId: null,
+          workspaceId: null,
+        }),
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          baseCwd: cwd,
+          source: "agent_home",
+          projectId: null,
+          workspaceId: null,
+          strategy: "project_primary",
+          cwd,
+        },
+        persistedExecutionWorkspace: null,
+      }))).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves non-git-sensitive adapters resolved from non-Git agent_home", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-non-git-agent-home";
+
+    await expect(assertGitSensitiveAdapterWorkspaceValid(buildWorkspaceValidationInput({
+      adapterType: "hermes_gateway",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+      }),
+      executionWorkspace: {
+        ...input.executionWorkspace,
+        baseCwd: cwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        strategy: "default",
+        cwd,
+      },
+      persistedExecutionWorkspace: null,
+    }))).resolves.toBeUndefined();
+  });
+
+  it("preserves remote git-sensitive tasks resolved from non-Git agent_home", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-remote-agent-home";
+
+    await expect(assertGitSensitiveAdapterWorkspaceValid(buildWorkspaceValidationInput({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      resolvedWorkspace: buildResolvedWorkspace({
+        cwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+      }),
+      executionWorkspace: {
+        ...input.executionWorkspace,
+        baseCwd: cwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        strategy: "project_primary",
+        cwd,
+      },
+      persistedExecutionWorkspace: null,
+      executionTarget: { kind: "cloud" },
+    }))).resolves.toBeUndefined();
+  });
+
   it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
     const input = buildWorkspaceValidationInput();
 
