@@ -63,12 +63,22 @@ echo "  [4/7] Preparing server UI assets..."
 cd "$REPO_ROOT"
 PAPERCLIP_RELEASE_REUSE_UI_DIST=1 bash "$REPO_ROOT/scripts/prepare-server-ui-dist.sh"
 
-# ── Step 5: Validate bundled entrypoint syntax ─────────────────────────────────
-echo "  [5/7] Verifying bundled entrypoint syntax..."
+# ── Step 5: Prepare packaged skills ────────────────────────────────────────────
+# Release packaging normally performs this copy in release.sh. Managed Git
+# installs execute this fetched checkout script directly, so stage the same files
+# before the installed CLI iterates package.json "files" entries.
+echo "  [5/8] Preparing packaged skills..."
+for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
+  rm -rf "$REPO_ROOT/$pkg_dir/skills"
+  cp -r "$REPO_ROOT/skills" "$REPO_ROOT/$pkg_dir/skills"
+done
+
+# ── Step 6: Validate bundled entrypoint syntax ─────────────────────────────────
+echo "  [6/8] Verifying bundled entrypoint syntax..."
 node --check "$DIST_DIR/index.js"
 
-# ── Step 6: Back up dev package.json, generate publishable one ─────────────────
-echo "  [6/7] Generating publishable package.json..."
+# ── Step 7: Back up dev package.json, generate publishable one ─────────────────
+echo "  [7/8] Generating publishable package.json..."
 cp "$CLI_DIR/package.json" "$CLI_DIR/package.dev.json"
 node "$REPO_ROOT/scripts/generate-npm-package-json.mjs"
 
@@ -85,9 +95,9 @@ node "$REPO_ROOT/scripts/prepare-npm-readme.mjs" \
   "$CLI_DIR/README.md" \
   "$README_ASSET_REF"
 
-# ── Step 7: Summary ───────────────────────────────────────────────────────────
+# ── Step 8: Summary ───────────────────────────────────────────────────────────
 BUNDLE_SIZE=$(wc -c < "$DIST_DIR/index.js" | xargs)
-echo "  [7/7] Build verification..."
+echo "  [8/8] Build verification..."
 echo ""
 echo "Build complete."
 echo "  Bundle: cli/dist/index.js (${BUNDLE_SIZE} bytes)"

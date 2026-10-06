@@ -420,10 +420,15 @@ test("bundled package dry runs preview without querying published versions", () 
   assert.doesNotMatch(releaseLib, /run_bundled_npm_publish publish "\.\/\$tarball"/);
 });
 
-test("npm builds use corepack and prepare the server UI for bundled Git installs", () => {
+test("npm builds prepare fetched-checkout release assets for managed Git installs", () => {
   assert.match(buildNpmScript, /corepack pnpm -r typecheck/);
   assert.doesNotMatch(buildNpmScript, /^\s*pnpm -r typecheck/m);
   assert.match(buildNpmScript, /prepare-server-ui-dist\.sh/);
+  assert.match(
+    buildNpmScript,
+    /for pkg_dir in server packages\/adapters\/claude-local packages\/adapters\/codex-local/,
+  );
+  assert.match(buildNpmScript, /cp -r "\$REPO_ROOT\/skills" "\$REPO_ROOT\/\$pkg_dir\/skills"/);
 });
 
 
