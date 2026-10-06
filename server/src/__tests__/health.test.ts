@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
+import { createServerInfoSnapshot } from "../server-info.js";
 
 const mockReadPersistedDevServerStatus = vi.hoisted(() => vi.fn());
 const testServerInfo = {
@@ -78,6 +79,21 @@ describe("GET /health", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
   }, 15_000);
+
+  it("reports the full deployed SHA from archive build metadata when git is unavailable", async () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const serverInfo = createServerInfoSnapshot({
+      gitCommand: () => { throw new Error("archive checkout has no .git"); },
+      buildCommitCommand: () => commit,
+    });
+    const app = createApp(undefined, serverInfo);
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.commit).toBe(commit);
+    expect(res.body.serverInfo.git).toMatchObject({ available: true, fullSha: commit });
+  });
 
   it("keeps the self-hosted health response byte-identical and omits cloud", async () => {
     const app = createApp(undefined, testServerInfo, undefined, {});

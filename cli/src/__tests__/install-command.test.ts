@@ -195,6 +195,8 @@ describe("managed install commands", () => {
       const env = call[2]?.env;
       expect(env, `${call[0]} ${call[1].join(" ")} must run with an explicit env`).toBeDefined();
       expect(env, `${call[0]} ${call[1].join(" ")} must not inherit NODE_ENV`).not.toHaveProperty("NODE_ENV");
+      expect(env, `${call[0]} ${call[1].join(" ")} must receive the resolved managed Git SHA`)
+        .toHaveProperty("PAPERCLIP_BUILD_COMMIT", sha);
     }
     const uiPreparationIndex = buildCalls.findIndex(([file, args]) =>
       file === "bash" && args[0] === "scripts/prepare-server-ui-dist.sh");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,6 +22,49 @@ it("packages a full source commit without a Docker build argument", () => {
     const stamp = JSON.parse(readFileSync(join(root, "server", "dist", "build-info.json"), "utf8"));
     expect(stamp.commit).toBe(git("rev-parse", "HEAD"));
     expect(stamp.commit).toMatch(/^[0-9a-f]{40}$/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("stamps an archive checkout without .git from PAPERCLIP_BUILD_COMMIT", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "paperclip-archive-build-stamp-")));
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  try {
+    const scriptDir = join(root, "server", "scripts");
+    mkdirSync(scriptDir, { recursive: true });
+    const script = join(scriptDir, "write-build-stamp.mjs");
+    copyFileSync(new URL("../../scripts/write-build-stamp.mjs", import.meta.url), script);
+    execFileSync(process.execPath, [script], {
+      cwd: root,
+      env: { ...process.env, PAPERCLIP_BUILD_COMMIT: commit },
+      stdio: "pipe",
+    });
+    const stamp = JSON.parse(readFileSync(join(root, "server", "dist", "build-info.json"), "utf8"));
+    expect(stamp).toEqual({ commit });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("keeps the authoritative managed Git marker when a later build inherits stale metadata", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "paperclip-managed-git-restamp-")));
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  try {
+    const scriptDir = join(root, "server", "scripts");
+    mkdirSync(scriptDir, { recursive: true });
+    const script = join(scriptDir, "write-build-stamp.mjs");
+    copyFileSync(new URL("../../scripts/write-build-stamp.mjs", import.meta.url), script);
+    writeFileSync(join(root, ".paperclip-build-commit"), `${commit}\n`);
+
+    execFileSync(process.execPath, [script], {
+      cwd: root,
+      env: { ...process.env, PAPERCLIP_BUILD_COMMIT: "f".repeat(40) },
+      stdio: "pipe",
+    });
+
+    const stamp = JSON.parse(readFileSync(join(root, "server", "dist", "build-info.json"), "utf8"));
+    expect(stamp).toEqual({ commit });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

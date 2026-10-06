@@ -16,7 +16,7 @@
 // no stamp and exit 0.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -24,20 +24,25 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const serverDir = join(scriptDir, "..");
 const distDir = join(serverDir, "dist");
 const outFile = join(distDir, "build-info.json");
+const managedGitCommitFile = join(serverDir, "..", ".paperclip-build-commit");
 
 /**
- * Resolve the commit for the build stamp. Prefer the git commit. Fall back to
- * the supplied commit — the value a Docker image build passes in
- * `PAPERCLIP_BUILD_COMMIT` when `.git` is absent. Return null when neither
- * source gives a non-empty value.
+ * Resolve the commit for the build stamp. Prefer the git commit. For managed
+ * Git archive builds, prefer the archive-derived marker over the ambient
+ * environment so a later old-CLI build cannot overwrite authoritative metadata
+ * with a stale value. Otherwise fall back to the supplied commit used by image
+ * builds when `.git` is absent.
  *
  * @param {unknown} gitCommit The `git rev-parse` result, or null on failure.
  * @param {unknown} suppliedCommit The `PAPERCLIP_BUILD_COMMIT` value.
+ * @param {unknown} managedGitCommit The archive-derived managed Git marker.
  * @returns {string | null}
  */
-export function resolveBuildCommit(gitCommit, suppliedCommit) {
+export function resolveBuildCommit(gitCommit, suppliedCommit, managedGitCommit) {
   const git = typeof gitCommit === "string" ? gitCommit.trim() : "";
   if (git) return git;
+  const managed = typeof managedGitCommit === "string" ? managedGitCommit.trim() : "";
+  if (managed) return managed;
   const supplied = typeof suppliedCommit === "string" ? suppliedCommit.trim() : "";
   if (supplied) return supplied;
   return null;
@@ -63,12 +68,24 @@ function readGitCommit() {
   }
 }
 
+function readManagedGitCommit() {
+  try {
+    return readFileSync(managedGitCommitFile, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolve the commit and write the build stamp. Write no stamp and return when
  * no commit is available, so the build continues.
  */
 function main() {
-  const commit = resolveBuildCommit(readGitCommit(), process.env.PAPERCLIP_BUILD_COMMIT);
+  const commit = resolveBuildCommit(
+    readGitCommit(),
+    process.env.PAPERCLIP_BUILD_COMMIT,
+    readManagedGitCommit(),
+  );
 
   if (!commit) {
     console.log("[build-stamp] no commit available; wrote no build stamp");

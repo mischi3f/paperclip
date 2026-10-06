@@ -23,6 +23,24 @@ for arg in "$@"; do
   esac
 done
 
+# Managed Git installs build a GitHub source archive, so the checkout has no
+# .git directory. New installers pass the resolved SHA directly. For upgrades
+# driven by an older installed CLI, recover the same immutable SHA from the
+# codeload archive's top-level directory. The archive is authoritative when it
+# exists: never let a stale ambient value describe different deployed code.
+managed_git_archive="$REPO_ROOT/../source.tar.gz"
+if [ -f "$managed_git_archive" ]; then
+  PAPERCLIP_BUILD_COMMIT="$(
+    bash "$REPO_ROOT/scripts/resolve-managed-git-build-commit.sh" "$managed_git_archive"
+  )"
+  export PAPERCLIP_BUILD_COMMIT
+  printf '%s\n' "$PAPERCLIP_BUILD_COMMIT" > "$REPO_ROOT/.paperclip-build-commit"
+fi
+
+if [ -n "${PAPERCLIP_BUILD_COMMIT:-}" ]; then
+  node "$REPO_ROOT/server/scripts/write-build-stamp.mjs"
+fi
+
 echo "==> Building paperclipai for npm"
 
 # ── Step 1: Forbidden token check ──────────────────────────────────────────────

@@ -40,6 +40,7 @@ const dbPackage = JSON.parse(
 const releaseScript = await readFile(new URL("./release.sh", import.meta.url), "utf8");
 const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), "utf8");
 const buildNpmScript = await readFile(new URL("./build-npm.sh", import.meta.url), "utf8");
+const managedGitCommitResolver = new URL("./resolve-managed-git-build-commit.sh", import.meta.url).pathname;
 const acpxRuntimePatch = await readFile(
   new URL("../patches/acpx@0.13.1.patch", import.meta.url),
   "utf8",
@@ -319,6 +320,11 @@ test("server package staging applies every bundled runtime patch and preserves t
   mkdirSync(sourceDir);
   mkdirSync(join(sourceDir, "dist"));
   writeFileSync(join(sourceDir, "dist", "index.js"), "export {};\n");
+  const buildCommit = "0123456789abcdef0123456789abcdef01234567";
+  writeFileSync(
+    join(sourceDir, "dist", "build-info.json"),
+    `${JSON.stringify({ commit: buildCommit })}\n`,
+  );
   mkdirSync(destinationDir);
   mkdirSync(binDir);
   writeFileSync(
@@ -398,6 +404,10 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
   );
 
   const stagedAcpxDir = join(destinationDir, "node_modules/acpx");
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(destinationDir, "dist", "build-info.json"), "utf8")),
+    { commit: buildCommit },
+  );
   assert.equal(lstatSync(stagedAcpxDir).isDirectory(), true);
   assert.equal(lstatSync(stagedAcpxDir).isSymbolicLink(), false);
   assert.equal(existsSync(join(destinationDir, "node_modules/.pnpm")), false);
@@ -449,6 +459,9 @@ test("bundled package dry runs preview without querying published versions", () 
 test("npm builds prepare fetched-checkout release assets for managed Git installs", () => {
   assert.match(buildNpmScript, /corepack pnpm -r typecheck/);
   assert.doesNotMatch(buildNpmScript, /^\s*pnpm -r typecheck/m);
+  assert.match(buildNpmScript, /source\.tar\.gz/);
+  assert.match(buildNpmScript, /PAPERCLIP_BUILD_COMMIT/);
+  assert.match(buildNpmScript, /resolve-managed-git-build-commit\.sh/);
   assert.match(buildNpmScript, /prepare-server-ui-dist\.sh/);
   assert.match(
     buildNpmScript,
@@ -457,6 +470,23 @@ test("npm builds prepare fetched-checkout release assets for managed Git install
   assert.match(buildNpmScript, /cp -r "\$REPO_ROOT\/skills" "\$REPO_ROOT\/\$pkg_dir\/skills"/);
 });
 
+test("managed Git archive metadata overrides a stale ambient build commit", (t) => {
+  const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-managed-git-commit-"));
+  const archiveName = "paperclip-0123456789abcdef0123456789abcdef01234567";
+  const archiveRoot = join(fixtureDir, archiveName);
+  const archivePath = join(fixtureDir, "source.tar.gz");
+  mkdirSync(archiveRoot);
+  writeFileSync(join(archiveRoot, "README.md"), "fixture\n");
+  execFileSync("tar", ["-czf", archivePath, "-C", fixtureDir, archiveName]);
+  t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
+
+  const resolved = execFileSync("bash", [managedGitCommitResolver, archivePath], {
+    encoding: "utf8",
+    env: { ...process.env, PAPERCLIP_BUILD_COMMIT: "f".repeat(40) },
+  }).trim();
+
+  assert.equal(resolved, "0123456789abcdef0123456789abcdef01234567");
+});
 
 test("installed ACPX runtime persists and restores optional goal capabilities", () => {
   const requireRunner = createRequire(new URL("../packages/paperclip-runner/package.json", import.meta.url));
