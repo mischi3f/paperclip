@@ -6,6 +6,7 @@ import {
 import {
   applyDefaultIsolatedExecutionWorkspacePolicy,
   buildExecutionWorkspaceAdapterConfig,
+  buildMergedExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   isUnrunnableWorktreeCombo,
@@ -298,6 +299,28 @@ describe("execution workspace policy helpers", () => {
     expect(result.workspaceRuntime).toEqual({
       services: [{ name: "web", command: "pnpm dev" }],
     });
+  });
+
+  it("keeps an assignee override from replacing a policy-managed shared workspace strategy", () => {
+    const result = buildMergedExecutionWorkspaceAdapterConfig({
+      agentConfig: {
+        workspaceStrategy: { type: "git_worktree", baseRef: "develop" },
+      },
+      assigneeAdapterConfig: {
+        workspaceStrategy: { type: "git_worktree", baseRef: "develop" },
+      },
+      projectPolicy: {
+        enabled: true,
+        defaultMode: "shared_workspace",
+        workspaceStrategy: { type: "project_primary" },
+      },
+      issueSettings: null,
+      mode: "shared_workspace",
+      legacyUseProjectWorkspace: null,
+      useIsolatedTaskDirectory: false,
+    });
+
+    expect(result.workspaceStrategy).toBeUndefined();
   });
 
   describe("partial issue workspace strategies", () => {

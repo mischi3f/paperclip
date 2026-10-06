@@ -482,6 +482,7 @@ import {
 import {
   applyDefaultIsolatedExecutionWorkspacePolicy,
   buildExecutionWorkspaceAdapterConfig,
+  buildMergedExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   isUnrunnableWorktreeCombo,
@@ -21607,21 +21608,16 @@ export function heartbeatService(
           issueExecutionWorkspaceSettings?.workspaceStrategy,
         ],
       });
-      const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
+      const mergedConfig = buildMergedExecutionWorkspaceAdapterConfig({
         agentConfig: config,
+        assigneeAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
         mode: requestedExecutionWorkspaceMode,
         legacyUseProjectWorkspace:
           issueAssigneeOverrides?.useProjectWorkspace ?? null,
+        useIsolatedTaskDirectory,
       });
-      const mergedConfig = {
-        ...workspaceManagedConfig,
-        ...(issueAssigneeOverrides?.adapterConfig ?? {}),
-        // The base below is already task-owned. Keep directory transport while
-        // preserving isolated mode and the mandatory sandbox preflight.
-        ...(useIsolatedTaskDirectory ? { workspaceStrategy: { type: "project_primary" } } : {}),
-      };
       const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
         mergedConfig,
         selectedEnvironmentId,

@@ -446,3 +446,36 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
 
   return nextConfig;
 }
+
+/**
+ * Applies workspace policy after assignee adapter overrides are merged.
+ *
+ * Assignee overrides may tune adapters, but they must not restore an agent-level
+ * workspace strategy that an enabled project/issue policy deliberately removed
+ * for shared project-workspace execution. The isolated task-directory override
+ * remains the final authority because it is a server-owned safety boundary.
+ */
+export function buildMergedExecutionWorkspaceAdapterConfig(input: {
+  agentConfig: Record<string, unknown>;
+  assigneeAdapterConfig: Record<string, unknown> | null;
+  projectPolicy: ProjectExecutionWorkspacePolicy | null;
+  issueSettings: IssueExecutionWorkspaceSettings | null;
+  mode: ParsedExecutionWorkspaceMode;
+  legacyUseProjectWorkspace: boolean | null;
+  useIsolatedTaskDirectory: boolean;
+}): Record<string, unknown> {
+  const mergedAgentConfig = {
+    ...input.agentConfig,
+    ...(input.assigneeAdapterConfig ?? {}),
+  };
+  const policyManagedConfig = buildExecutionWorkspaceAdapterConfig({
+    agentConfig: mergedAgentConfig,
+    projectPolicy: input.projectPolicy,
+    issueSettings: input.issueSettings,
+    mode: input.mode,
+    legacyUseProjectWorkspace: input.legacyUseProjectWorkspace,
+  });
+  return input.useIsolatedTaskDirectory
+    ? { ...policyManagedConfig, workspaceStrategy: { type: "project_primary" } }
+    : policyManagedConfig;
+}
