@@ -2208,10 +2208,12 @@ describe("shared ACPX engine runtime behavior", () => {
     const remoteCwd = "/workspace/remote";
     const { sessionInputs, runtimeOptions } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js", cwd: localCwd, stateDir: path.join(root, "state") },
-      { context: { paperclipWorkspace: { cwd: localCwd, workspaceWorktreePath: localCwd } }, executionTarget: { kind: "remote", transport: "ssh", remoteCwd } },
+      { context: { projectId: "project-1", paperclipWorkspace: { cwd: localCwd, workspaceId: "workspace-1", workspaceWorktreePath: localCwd } }, executionTarget: { kind: "remote", transport: "ssh", remoteCwd } },
     );
     const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
     expect(env.PAPERCLIP_WORKSPACE_CWD).toBe(localCwd);
+    expect(env.PAPERCLIP_PROJECT_ID).toBe("project-1");
+    expect(env.PAPERCLIP_PROJECT_WORKSPACE_ID).toBe("workspace-1");
     // The ssh remote transport is NOT the runner-backed process-session lane, so
     // it stays byte-identical: no host-spawn redirect. `cwd` is the host cwd and
     // `spawnCwd` is unset.

@@ -134,6 +134,7 @@ describe("claude remote execution", () => {
         },
       },
       context: {
+        projectId: "project-1",
         paperclipWorkspace: {
           cwd: workspaceDir,
           source: "project_primary",
@@ -203,6 +204,8 @@ describe("claude remote execution", () => {
     expect(call?.[2]).toContain("--add-dir");
     expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
+    expect(call?.[3].env.PAPERCLIP_PROJECT_ID).toBe("project-1");
+    expect(call?.[3].env.PAPERCLIP_PROJECT_WORKSPACE_ID).toBe("workspace-1");
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_WORKTREE_PATH).toBeUndefined();
     expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
       {

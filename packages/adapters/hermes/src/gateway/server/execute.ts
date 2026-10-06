@@ -526,6 +526,10 @@ function buildRunBody(
   const workspace = parseObject(ctx.context.paperclipWorkspace);
   const projectId = nonEmpty(workspace.projectId) ?? nonEmpty(ctx.context.projectId);
   if (projectId) environment.PAPERCLIP_PROJECT_ID = projectId;
+  const projectWorkspaceId = nonEmpty(workspace.workspaceId);
+  if (projectId && projectWorkspaceId) {
+    environment.PAPERCLIP_PROJECT_WORKSPACE_ID = projectWorkspaceId;
+  }
   const approvalId = nonEmpty(ctx.context.approvalId);
   if (approvalId) environment.PAPERCLIP_APPROVAL_ID = approvalId;
   const approvalStatus = nonEmpty(ctx.context.approvalStatus);

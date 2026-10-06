@@ -179,6 +179,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const workspaceSource = asString(workspaceContext.source, "");
   const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "") || null;
+  const projectId = asString(workspaceContext.projectId, "") || asString(context.projectId, "") || null;
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "") || null;
   const workspaceRepoRef = asString(workspaceContext.repoRef, "") || null;
   const workspaceBranch = asString(workspaceContext.branchName, "") || null;
@@ -266,6 +267,8 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   }
   applyPaperclipWorkspaceEnv(env, {
+    projectId,
+    projectWorkspaceId: projectId ? workspaceId : null,
     workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
     workspaceStrategy,

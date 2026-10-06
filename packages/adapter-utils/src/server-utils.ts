@@ -3226,6 +3226,8 @@ export function buildPaperclipEnv(agent: {
 export function applyPaperclipWorkspaceEnv(
   env: Record<string, string>,
   input: {
+    projectId?: string | null;
+    projectWorkspaceId?: string | null;
     workspaceCwd?: string | null;
     workspaceSource?: string | null;
     workspaceStrategy?: string | null;
@@ -3238,6 +3240,8 @@ export function applyPaperclipWorkspaceEnv(
   },
 ): Record<string, string> {
   const mappings = [
+    ["PAPERCLIP_PROJECT_ID", input.projectId],
+    ["PAPERCLIP_PROJECT_WORKSPACE_ID", input.projectWorkspaceId],
     ["PAPERCLIP_WORKSPACE_CWD", input.workspaceCwd],
     ["PAPERCLIP_WORKSPACE_SOURCE", input.workspaceSource],
     ["PAPERCLIP_WORKSPACE_STRATEGY", input.workspaceStrategy],

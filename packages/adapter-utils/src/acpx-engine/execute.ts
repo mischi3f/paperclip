@@ -1808,6 +1808,7 @@ async function buildRuntime(input: {
   const workspaceSource = asString(workspaceContext.source, "");
   const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "");
+  const projectId = asString(workspaceContext.projectId, "") || asString(context.projectId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
   const workspaceRepoRef = asString(workspaceContext.repoRef, "");
   const workspaceBranch = asString(workspaceContext.branchName, "");
@@ -1982,6 +1983,8 @@ async function buildRuntime(input: {
   if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
   if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
   applyPaperclipWorkspaceEnv(env, {
+    projectId,
+    projectWorkspaceId: projectId ? workspaceId : null,
     workspaceCwd: shapedWorkspaceEnv.workspaceCwd,
     workspaceSource,
     workspaceStrategy,

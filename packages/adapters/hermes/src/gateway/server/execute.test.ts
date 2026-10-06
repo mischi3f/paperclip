@@ -286,6 +286,7 @@ describe("execute", () => {
       PAPERCLIP_WAKE_REASON: "issue_commented",
       PAPERCLIP_WAKE_COMMENT_ID: "comment-1",
       PAPERCLIP_PROJECT_ID: "project-1",
+      PAPERCLIP_PROJECT_WORKSPACE_ID: "workspace-1",
       PAPERCLIP_APPROVAL_ID: "approval-1",
       PAPERCLIP_APPROVAL_STATUS: "approved",
       PAPERCLIP_LINKED_ISSUE_IDS: "issue-1,issue-2",

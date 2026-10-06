@@ -3354,6 +3354,8 @@ describe("applyPaperclipWorkspaceEnv", () => {
     const env = applyPaperclipWorkspaceEnv(
       {},
       {
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
         workspaceCwd: "/tmp/workspace",
         workspaceSource: "project_primary",
         workspaceStrategy: "git_worktree",
@@ -3367,6 +3369,8 @@ describe("applyPaperclipWorkspaceEnv", () => {
     );
 
     expect(env).toEqual({
+      PAPERCLIP_PROJECT_ID: "project-1",
+      PAPERCLIP_PROJECT_WORKSPACE_ID: "workspace-1",
       PAPERCLIP_WORKSPACE_CWD: "/tmp/workspace",
       PAPERCLIP_WORKSPACE_SOURCE: "project_primary",
       PAPERCLIP_WORKSPACE_STRATEGY: "git_worktree",
