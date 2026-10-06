@@ -160,8 +160,18 @@ export function gateProjectExecutionWorkspacePolicy(
   projectPolicy: ProjectExecutionWorkspacePolicy | null,
   isolatedWorkspacesEnabled: boolean,
 ): ProjectExecutionWorkspacePolicy | null {
-  if (!isolatedWorkspacesEnabled) return null;
-  return projectPolicy;
+  if (isolatedWorkspacesEnabled) return projectPolicy;
+  if (!projectPolicy?.enabled) return null;
+  // The feature gate disables isolated/operator workspaces, not explicit shared
+  // project-workspace selection. Dropping a shared policy here lets an agent's
+  // adapter-level git_worktree strategy reappear before dispatch.
+  if (
+    projectPolicy.defaultMode === undefined ||
+    projectPolicy.defaultMode === "shared_workspace"
+  ) {
+    return projectPolicy;
+  }
+  return null;
 }
 
 /**

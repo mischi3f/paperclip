@@ -643,13 +643,27 @@ describe("execution workspace policy helpers", () => {
     expect(issueExecutionWorkspaceModeForPersistedWorkspace(undefined)).toBe("agent_default");
   });
 
-  it("disables project execution workspace policy when the instance flag is off", () => {
+  it("gates isolated project policy but keeps shared-workspace policy authoritative when the instance flag is off", () => {
     expect(
       gateProjectExecutionWorkspacePolicy(
         { enabled: true, defaultMode: "isolated_workspace" },
         false,
       ),
     ).toBeNull();
+    expect(
+      gateProjectExecutionWorkspacePolicy(
+        {
+          enabled: true,
+          defaultMode: "shared_workspace",
+          workspaceStrategy: { type: "project_primary", baseRef: "main" },
+        },
+        false,
+      ),
+    ).toEqual({
+      enabled: true,
+      defaultMode: "shared_workspace",
+      workspaceStrategy: { type: "project_primary", baseRef: "main" },
+    });
     expect(
       gateProjectExecutionWorkspacePolicy(
         { enabled: true, defaultMode: "isolated_workspace" },
