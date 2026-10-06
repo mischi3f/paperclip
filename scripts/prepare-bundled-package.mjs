@@ -1,13 +1,36 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-export function materializePublishManifest(pkg) {
+export function discoverWorkspacePackageVersions(sourceRoot = repoRoot) {
+  const versions = new Map();
+
+  function walk(directory) {
+    if (!existsSync(directory)) return;
+    const packagePath = join(directory, "package.json");
+    if (existsSync(packagePath)) {
+      const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
+      if (typeof pkg.name === "string" && typeof pkg.version === "string") {
+        versions.set(pkg.name, pkg.version);
+      }
+      return;
+    }
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === "node_modules" || entry.name === "dist" || entry.name === ".git") continue;
+      walk(join(directory, entry.name));
+    }
+  }
+
+  for (const root of ["packages", "server", "ui", "cli"]) walk(join(sourceRoot, root));
+  return versions;
+}
+
+export function materializePublishManifest(pkg, workspacePackageVersions = new Map()) {
   const publishConfig = pkg.publishConfig ?? {};
   const publishManifest = { ...pkg };
 
@@ -22,7 +45,8 @@ export function materializePublishManifest(pkg) {
         if (typeof specifier !== "string" || !specifier.startsWith("workspace:")) return [name, specifier];
         const range = specifier.slice("workspace:".length);
         const prefix = range === "^" || range === "~" ? range : "";
-        return [name, `${prefix}${pkg.version}`];
+        const dependencyVersion = workspacePackageVersions.get(name) ?? pkg.version;
+        return [name, `${prefix}${dependencyVersion}`];
       }),
     );
   }
@@ -163,7 +187,8 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
   }
 
   const deployedPackagePath = resolve(destinationDir, "package.json");
-  const publishManifest = materializePublishManifest(sourcePackage);
+  const workspacePackageVersions = discoverWorkspacePackageVersions(sourceRoot);
+  const publishManifest = materializePublishManifest(sourcePackage, workspacePackageVersions);
   const installManifest = createBundledInstallManifest(publishManifest, bundledDependencies);
   writeFileSync(deployedPackagePath, `${JSON.stringify(installManifest, null, 2)}\n`);
 

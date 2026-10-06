@@ -173,17 +173,31 @@ test("bundled package staging materializes publishConfig entrypoints without sou
   });
 });
 
-test("bundled package staging materializes workspace dependency versions", () => {
-  const staged = materializePublishManifest({
-    name: "@paperclipai/example",
-    version: "2026.723.0",
-    dependencies: { exact: "workspace:*", caret: "workspace:^", tilde: "workspace:~" },
-  });
+test("bundled package staging materializes each workspace dependency's actual package version", () => {
+  const staged = materializePublishManifest(
+    {
+      name: "@paperclipai/example",
+      version: "2026.723.0",
+      dependencies: {
+        exact: "workspace:*",
+        caret: "workspace:^",
+        tilde: "workspace:~",
+        "@paperclipai/plugin-sdk": "workspace:*",
+      },
+    },
+    new Map([
+      ["exact", "2026.723.0"],
+      ["caret", "2026.724.0"],
+      ["tilde", "2026.725.0"],
+      ["@paperclipai/plugin-sdk", "1.0.0"],
+    ]),
+  );
 
   assert.deepEqual(staged.dependencies, {
     exact: "2026.723.0",
-    caret: "^2026.723.0",
-    tilde: "~2026.723.0",
+    caret: "^2026.724.0",
+    tilde: "~2026.725.0",
+    "@paperclipai/plugin-sdk": "1.0.0",
   });
 });
 
