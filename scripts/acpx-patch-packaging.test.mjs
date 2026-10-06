@@ -152,13 +152,25 @@ test("published packages preserve the patched embedded-postgres runtime", () => 
   assert.equal(cliEsbuildConfig.external.includes("embedded-postgres"), false);
 });
 
-test("bundled package staging materializes publishConfig entrypoints", () => {
-  const staged = materializePublishManifest(adapterUtilsPackage);
+test("bundled package staging materializes publishConfig entrypoints without source-only lifecycle scripts", () => {
+  const staged = materializePublishManifest({
+    ...adapterUtilsPackage,
+    scripts: {
+      build: "tsc",
+      prepack: "pnpm run build",
+      postpack: "rm -rf generated",
+      start: "node dist/index.js",
+    },
+  });
 
   assert.equal(staged.publishConfig, undefined);
   assert.equal(staged.main, "./dist/index.js");
   assert.equal(staged.types, "./dist/index.d.ts");
   assert.deepEqual(staged.exports, adapterUtilsPackage.publishConfig.exports);
+  assert.deepEqual(staged.scripts, {
+    build: "tsc",
+    start: "node dist/index.js",
+  });
 });
 
 test("bundled package staging materializes workspace dependency versions", () => {

@@ -27,6 +27,13 @@ export function materializePublishManifest(pkg) {
     );
   }
 
+  if (publishManifest.scripts) {
+    publishManifest.scripts = { ...publishManifest.scripts };
+    delete publishManifest.scripts.prepack;
+    delete publishManifest.scripts.postpack;
+    if (Object.keys(publishManifest.scripts).length === 0) delete publishManifest.scripts;
+  }
+
   delete publishManifest.publishConfig;
   return publishManifest;
 }
