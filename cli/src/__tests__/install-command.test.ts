@@ -130,12 +130,24 @@ describe("managed install commands", () => {
         if (args.includes("pack")) {
           const destination = args[args.indexOf("--pack-destination") + 1];
           const packageDir = args[args.indexOf("--dir") + 1];
+          const checkout = String(_options?.cwd ?? "");
+          if (packageDir === "server" && !fs.existsSync(path.join(checkout, "server", "ui-dist", "index.html"))) {
+            throw new Error("server package was staged before ui-dist");
+          }
           const packageName = packageDir === "server" ? "paperclipai-server" : "paperclipai-shared";
           fs.writeFileSync(path.join(destination, `${packageName}-0.3.1.tgz`), "package");
         }
         return { stdout: "", stderr: "" };
       }
-      if (file === "bash") return { stdout: "", stderr: "" };
+      if (file === "bash") {
+        if (args[0] === "scripts/prepare-server-ui-dist.sh") {
+          const checkout = String(_options?.cwd ?? "");
+          const uiDist = path.join(checkout, "server", "ui-dist");
+          fs.mkdirSync(uiDist, { recursive: true });
+          fs.writeFileSync(path.join(uiDist, "index.html"), "prepared ui");
+        }
+        return { stdout: "", stderr: "" };
+      }
       if (file === "npm" && args[0] === "pack") {
         const packageName = args[1]?.includes("workspace-package-") ? "paperclipai-db" : "paperclipai";
         fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], `${packageName}-0.3.1.tgz`), "package");
@@ -178,12 +190,21 @@ describe("managed install commands", () => {
       file === "corepack" ||
       (file === "npm" && args[0] === "pack") ||
       (file === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs")));
-    expect(buildCalls).toHaveLength(9);
+    expect(buildCalls).toHaveLength(10);
     for (const call of buildCalls) {
       const env = call[2]?.env;
       expect(env, `${call[0]} ${call[1].join(" ")} must run with an explicit env`).toBeDefined();
       expect(env, `${call[0]} ${call[1].join(" ")} must not inherit NODE_ENV`).not.toHaveProperty("NODE_ENV");
     }
+    const uiPreparationIndex = buildCalls.findIndex(([file, args]) =>
+      file === "bash" && args[0] === "scripts/prepare-server-ui-dist.sh");
+    expect(uiPreparationIndex).toBeGreaterThanOrEqual(0);
+    const uiPreparationCall = buildCalls[uiPreparationIndex];
+    expect(uiPreparationCall?.[2]?.cwd).toContain(path.join("source"));
+    expect(uiPreparationCall?.[2]?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST).toBe("1");
+    const serverPackIndex = buildCalls.findIndex(([file, args]) =>
+      file === "corepack" && args.includes("pack") && args[args.indexOf("--dir") + 1] === "server");
+    expect(serverPackIndex).toBeGreaterThan(uiPreparationIndex);
     const uiPackCall = buildCalls.find(([file, , options]) => file === "corepack" && options?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST === "1");
     expect(uiPackCall).toBeDefined();
   });
