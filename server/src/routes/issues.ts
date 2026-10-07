@@ -9470,16 +9470,29 @@ export function issueRoutes(
           lockedIssue.id,
           tx,
         );
+        let requestedActionId = actionId;
+        if (!requestedActionId && !activeRecoveryAction && executionReconciliation) {
+          // Automatic no-replay disposition intentionally resolves the recovery
+          // action while retaining an execution blocker. Let verified evidence
+          // address that effective hold even though it is no longer "active".
+          // The settled-row checks below still bind the operation to this issue,
+          // require board authority, and accept only an execution reconciliation.
+          requestedActionId = (await getExecutionBlocker(
+            tx as unknown as Db,
+            lockedIssue.companyId,
+            lockedIssue.id,
+          ))?.recoveryActionId ?? undefined;
+        }
         if (
-          actionId &&
-          (!activeRecoveryAction || activeRecoveryAction.id !== actionId)
+          requestedActionId &&
+          (!activeRecoveryAction || activeRecoveryAction.id !== requestedActionId)
         ) {
           const [settled] = await tx
             .select()
             .from(issueRecoveryActions)
             .where(
               and(
-                eq(issueRecoveryActions.id, actionId),
+                eq(issueRecoveryActions.id, requestedActionId),
                 eq(issueRecoveryActions.companyId, lockedIssue.companyId),
                 eq(issueRecoveryActions.sourceIssueId, lockedIssue.id),
                 inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
@@ -9524,7 +9537,7 @@ export function issueRoutes(
         }
         if (
           !activeRecoveryAction ||
-          (actionId && activeRecoveryAction.id !== actionId)
+          (requestedActionId && activeRecoveryAction.id !== requestedActionId)
         ) {
           throw notFound("Active recovery action not found");
         }
