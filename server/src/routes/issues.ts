@@ -12876,6 +12876,24 @@ export function issueRoutes(
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
+      if (
+        typeof updateFields.parentId === "string" &&
+        updateFields.parentId !== existing.parentId &&
+        (await svc.wouldCreateParentCycle(
+          existing.companyId,
+          existing.id,
+          updateFields.parentId,
+        ))
+      ) {
+        throw conflict(
+          "Delegation cycle: an issue cannot be moved below itself or one of its descendants.",
+          {
+            code: "delegation_cycle",
+            issueId: existing.id,
+            parentIssueId: updateFields.parentId,
+          },
+        );
+      }
       if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {
         throw unprocessable("Send conversation messages through the comments endpoint with a clientRequestId");
       }
@@ -13601,7 +13619,9 @@ export function issueRoutes(
       const assertLockedReviewPolicyAllowsMutation = async (
         tx: Parameters<typeof svc.update>[2],
       ) => {
-        const lockedExisting = await svc.getByIdForUpdate(id, tx);
+        const lockedExisting = req.body.parentId !== undefined
+          ? await svc.getByIdForParentMutation(id, existing.companyId, tx)
+          : await svc.getByIdForUpdate(id, tx);
         if (!lockedExisting) return false;
         const lockedPolicyChangeRequested =
           req.body.reviewPolicy !== undefined &&

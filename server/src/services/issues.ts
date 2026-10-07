@@ -1926,6 +1926,7 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
   if (!parentId) return;
   const [parent] = await db.select({ conversationAgentId: issues.conversationAgentId })
     .from(issues).where(and(eq(issues.id, parentId), eq(issues.companyId, companyId)));
+  if (!parent) throw notFound("Parent issue not found");
   if (parent?.conversationAgentId) throw unprocessable("Conversations cannot have new subtasks; create a task in a project instead");
 }
 
@@ -6618,6 +6619,78 @@ export async function readIssueCommentRunLogText(run: {
   return content;
 }
 
+async function wouldCreateIssueParentCycle(
+  dbOrTx: Db,
+  companyId: string,
+  issueId: string,
+  proposedParentId: string,
+): Promise<boolean> {
+  if (issueId === proposedParentId) return true;
+  const rows = await dbOrTx.execute(sql`
+    WITH RECURSIVE ancestors(id, parent_id) AS (
+      SELECT id, parent_id
+      FROM issues
+      WHERE company_id = ${companyId}
+        AND id = ${proposedParentId}
+      UNION
+      SELECT parent.id, parent.parent_id
+      FROM issues parent
+      JOIN ancestors ON parent.id = ancestors.parent_id
+      WHERE parent.company_id = ${companyId}
+    )
+    SELECT id
+    FROM ancestors
+    WHERE id = ${issueId}
+    LIMIT 1
+  `);
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+async function lockIssueParentGraph(dbOrTx: Db, companyId: string): Promise<void> {
+  await dbOrTx.execute(sql`
+    select pg_advisory_xact_lock(
+      hashtextextended(${`paperclip:issue-parent:${companyId}`}, 0)
+    )
+  `);
+}
+
+async function assertImportIssueParentGraph(
+  dbOrTx: Db,
+  companyId: string,
+  rows: ImportIssueRow[],
+): Promise<void> {
+  await lockIssueParentGraph(dbOrTx, companyId);
+  const batchIds = new Set(rows.map((row) => row.id));
+  const parentById = new Map(
+    rows.map((row) => [row.id, row.parentId ?? null] as const),
+  );
+
+  for (const row of rows) {
+    const parentId = row.parentId ?? null;
+    if (!parentId || batchIds.has(parentId)) continue;
+    await assertExecutionTaskParent(dbOrTx, companyId, parentId);
+  }
+
+  const fullyChecked = new Set<string>();
+  for (const row of rows) {
+    if (fullyChecked.has(row.id)) continue;
+    const path = new Set<string>();
+    let currentId: string | null = row.id;
+    while (currentId && batchIds.has(currentId) && !fullyChecked.has(currentId)) {
+      if (path.has(currentId)) {
+        throw conflict("Issue parent assignment would create a delegation cycle", {
+          code: "delegation_cycle",
+          issueId: row.id,
+          parentId: row.parentId ?? null,
+        });
+      }
+      path.add(currentId);
+      currentId = parentById.get(currentId) ?? null;
+    }
+    for (const checkedId of path) fullyChecked.add(checkedId);
+  }
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -8441,6 +8514,18 @@ export function issueService(db: Db) {
     },
 
     /**
+     * Refuse a parent reassignment that would place an issue beneath itself.
+     * Walking upward from the proposed parent is bounded by `UNION`, so this
+     * also terminates safely if older data already contains a malformed loop.
+     */
+    wouldCreateParentCycle: async (
+      companyId: string,
+      issueId: string,
+      proposedParentId: string,
+    ): Promise<boolean> =>
+      wouldCreateIssueParentCycle(db, companyId, issueId, proposedParentId),
+
+    /**
      * Walk the full parent chain from `parentIssueId` (inclusive) looking for
      * a still-open ancestor created by `agentId`. Used to refuse agent
      * delegation cycles: an agent assigning a new child to the agent that
@@ -8510,6 +8595,20 @@ export function issueService(db: Db) {
         .select()
         .from(issues)
         .where(eq(issues.id, id))
+        .for("update")
+        .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+    },
+
+    getByIdForParentMutation: async (
+      id: string,
+      companyId: string,
+      dbOrTx: any,
+    ) => {
+      await lockIssueParentGraph(dbOrTx as Db, companyId);
+      return dbOrTx
+        .select()
+        .from(issues)
+        .where(and(eq(issues.id, id), eq(issues.companyId, companyId)))
         .for("update")
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
     },
@@ -9830,6 +9929,9 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       const persist = async (tx: DbTransaction) => {
+        if (issueData.parentId) {
+          await lockIssueParentGraph(tx as unknown as Db, companyId);
+        }
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
           const identity = `conversation:${companyId}:${issueData.conversationAgentId}:${issueData.conversationUserId}`;
@@ -10301,6 +10403,11 @@ export function issueService(db: Db) {
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;
       await db.transaction(async (tx) => {
+        await assertImportIssueParentGraph(
+          tx as unknown as Db,
+          companyId,
+          rows,
+        );
         // Self-correcting counter: seed from max(issue_number) so a drifted
         // company counter cannot mint colliding identifiers, then reserve the
         // whole range in one bump instead of one-per-issue.
@@ -10403,7 +10510,6 @@ export function issueService(db: Db) {
 
         let counter = base;
         for (const row of rows) {
-          await assertExecutionTaskParent(tx as unknown as Db, companyId, row.parentId);
           counter += 1;
           const issueNumber = counter;
           const identifier = `${company.issuePrefix}-${issueNumber}`;
@@ -10937,6 +11043,9 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        if (issueData.parentId !== undefined) {
+          await lockIssueParentGraph(tx as Db, existing.companyId);
+        }
         // The receipt baseline must be read under the same row lock as the
         // write. Otherwise a concurrent update can be mistaken for a change
         // made by this request.
@@ -10947,6 +11056,33 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (
+          issueData.parentId !== undefined &&
+          issueData.parentId !== receiptExisting.parentId
+        ) {
+          await assertExecutionTaskParent(
+            tx as Db,
+            receiptExisting.companyId,
+            issueData.parentId,
+          );
+        }
+        if (
+          issueData.parentId !== undefined &&
+          issueData.parentId !== null &&
+          issueData.parentId !== receiptExisting.parentId &&
+          await wouldCreateIssueParentCycle(
+            tx as unknown as Db,
+            receiptExisting.companyId,
+            id,
+            issueData.parentId,
+          )
+        ) {
+          throw conflict("Issue parent assignment would create a delegation cycle", {
+            code: "delegation_cycle",
+            issueId: id,
+            parentId: issueData.parentId,
+          });
+        }
         if (actorAgentId && actorRunId) {
           // Recheck under a run lock: a request admitted before Stop must not
           // commit a late Done after cancellation revoked its credentials.

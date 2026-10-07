@@ -292,8 +292,7 @@ function sortIssuesForImport(sourceIssues: IssueRow[]): IssueRow[] {
       return 0;
     }
     if (stack.has(issue.id)) {
-      memoDepth.set(issue.id, 0);
-      return 0;
+      throw new Error(`Cannot merge issue history with a parent cycle involving issue ${issue.id}.`);
     }
     const parent = byId.get(issue.parentId);
     if (!parent) {
@@ -307,13 +306,16 @@ function sortIssuesForImport(sourceIssues: IssueRow[]): IssueRow[] {
     return depth;
   };
 
-  return [...sourceIssues].sort((left, right) => {
-    const depthDelta = depthFor(left) - depthFor(right);
-    if (depthDelta !== 0) return depthDelta;
-    const createdDelta = left.createdAt.getTime() - right.createdAt.getTime();
-    if (createdDelta !== 0) return createdDelta;
-    return left.id.localeCompare(right.id);
-  });
+  return sourceIssues
+    .map((issue) => ({ issue, depth: depthFor(issue) }))
+    .sort((left, right) => {
+      const depthDelta = left.depth - right.depth;
+      if (depthDelta !== 0) return depthDelta;
+      const createdDelta = left.issue.createdAt.getTime() - right.issue.createdAt.getTime();
+      if (createdDelta !== 0) return createdDelta;
+      return left.issue.id.localeCompare(right.issue.id);
+    })
+    .map(({ issue }) => issue);
 }
 
 export function parseWorktreeMergeScopes(rawValue: string | undefined): WorktreeMergeScope[] {

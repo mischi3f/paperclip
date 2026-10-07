@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   getByIdentifier: vi.fn(),
   getByIdForUpdate: vi.fn(),
+  getByIdForParentMutation: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -20,6 +21,7 @@ const mockIssueService = vi.hoisted(() => ({
   getWakeableParentAfterChildCompletion: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   listReviewAttention: vi.fn(),
+  wouldCreateParentCycle: vi.fn(),
 }));
 
 const mockPauseGate = vi.hoisted(() => vi.fn(async (): Promise<Record<string, unknown> | null> => null));
@@ -261,13 +263,65 @@ describe("issue update comment wakeups", () => {
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
+    mockIssueService.getByIdForParentMutation.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.getDependencyReadiness.mockResolvedValue({ unresolvedBlockerCount: 1 });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
+    mockIssueService.wouldCreateParentCycle.mockResolvedValue(false);
   });
+
+  it("rejects moving an issue below its own descendant", async () => {
+    const existing = makeIssue();
+    const descendantId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(makeIssue({ parentId: descendantId }));
+    mockIssueService.wouldCreateParentCycle.mockResolvedValue(true);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ parentId: descendantId });
+
+    expect(res.status).toBe(409);
+    expect(res.body.details).toMatchObject({
+      code: "delegation_cycle",
+      issueId: existing.id,
+      parentIssueId: descendantId,
+    });
+    expect(mockIssueService.wouldCreateParentCycle).toHaveBeenCalledWith(
+      existing.companyId,
+      existing.id,
+      descendantId,
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it("requests the company graph lock before the review-policy row lock for parent updates", async () => {
+    const existing = makeIssue({ reviewPolicy: "anyone" });
+    const parentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const tx = {};
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.getByIdForParentMutation.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(makeIssue({ parentId }));
+
+    const res = await request(
+      await createApp(async (callback) => callback(tx)),
+    )
+      .patch(`/api/issues/${existing.id}`)
+      .send({ parentId, reviewPolicy: "human_only" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.getByIdForParentMutation).toHaveBeenCalledWith(
+      existing.id,
+      existing.companyId,
+      tx,
+    );
+    expect(mockIssueService.getByIdForParentMutation.mock.invocationCallOrder[0]).toBeLessThan(
+      mockIssueService.update.mock.invocationCallOrder[0],
+    );
+  }, 30_000);
 
   it.each(["post", "patch"] as const)("rejects %s board messages under an inherited pause before any mutation", async (method) => {
     const existing = makeIssue();

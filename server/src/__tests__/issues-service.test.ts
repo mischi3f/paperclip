@@ -3078,6 +3078,270 @@ describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
     expect(other).toBeNull();
   });
 
+  it("detects structural parent cycles without rejecting valid moves", async () => {
+    const { companyId, rootId, midId } = await seedChain();
+
+    expect(await svc.wouldCreateParentCycle(companyId, rootId, midId)).toBe(true);
+    expect(await svc.wouldCreateParentCycle(companyId, midId, rootId)).toBe(false);
+    expect(await svc.wouldCreateParentCycle(companyId, rootId, rootId)).toBe(true);
+  });
+
+  it("serializes reciprocal reparenting so concurrent updates cannot create a cycle", async () => {
+    const { companyId, rootId } = await seedChain();
+    const peerId = randomUUID();
+    await db.insert(issues).values({
+      id: peerId,
+      companyId,
+      title: "Peer root task",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 3,
+      identifier: "CHAIN-3",
+    });
+
+    const results = await Promise.allSettled([
+      svc.update(rootId, { parentId: peerId, companyGuard: companyId }),
+      svc.update(peerId, { parentId: rootId, companyGuard: companyId }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({
+      status: "rejected",
+      reason: {
+        status: 409,
+        details: { code: "delegation_cycle" },
+      },
+    });
+    const rows = await db
+      .select({ id: issues.id, parentId: issues.parentId })
+      .from(issues)
+      .where(sql`${issues.id} in (${rootId}, ${peerId})`);
+    const parents = new Map(rows.map((row) => [row.id, row.parentId]));
+    expect(parents.get(rootId) === peerId && parents.get(peerId) === rootId).toBe(false);
+  });
+
+  it("rejects a parent from another company without persisting the edge", async () => {
+    const { companyId, rootId } = await seedChain();
+    const foreignCompanyId = randomUUID();
+    const foreignParentId = randomUUID();
+    await db.insert(companies).values({
+      id: foreignCompanyId,
+      name: "Foreign Co",
+      issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: foreignParentId,
+      companyId: foreignCompanyId,
+      title: "Foreign parent",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: "FOREIGN-1",
+    });
+
+    await expect(
+      svc.update(rootId, { parentId: foreignParentId, companyGuard: companyId }),
+    ).rejects.toMatchObject({ status: 404 });
+
+    const [persisted] = await db
+      .select({ parentId: issues.parentId })
+      .from(issues)
+      .where(eq(issues.id, rootId));
+    expect(persisted?.parentId).toBeNull();
+  });
+
+  it("rejects simultaneous reciprocal cross-company parent updates", async () => {
+    const { companyId, rootId } = await seedChain();
+    const foreignCompanyId = randomUUID();
+    const foreignRootId = randomUUID();
+    await db.insert(companies).values({
+      id: foreignCompanyId,
+      name: "Foreign Co",
+      issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: foreignRootId,
+      companyId: foreignCompanyId,
+      title: "Foreign root",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 1,
+      identifier: "FOREIGN-1",
+    });
+
+    const results = await Promise.allSettled([
+      svc.update(rootId, { parentId: foreignRootId, companyGuard: companyId }),
+      svc.update(foreignRootId, {
+        parentId: rootId,
+        companyGuard: foreignCompanyId,
+      }),
+    ]);
+
+    expect(results).toEqual([
+      expect.objectContaining({ status: "rejected", reason: expect.objectContaining({ status: 404 }) }),
+      expect.objectContaining({ status: "rejected", reason: expect.objectContaining({ status: 404 }) }),
+    ]);
+    const rows = await db
+      .select({ id: issues.id, parentId: issues.parentId })
+      .from(issues)
+      .where(sql`${issues.id} in (${rootId}, ${foreignRootId})`);
+    expect(rows.every((row) => row.parentId === null)).toBe(true);
+  });
+
+  it("rejects a raw cross-company parent edge at the database boundary", async () => {
+    const { rootId } = await seedChain();
+    const foreignCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: foreignCompanyId,
+      name: "Database boundary company",
+      issuePrefix: `D${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await expect(
+      db.insert(issues).values({
+        id: randomUUID(),
+        companyId: foreignCompanyId,
+        parentId: rootId,
+        title: "Invalid foreign child",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: `DB-${foreignCompanyId.slice(0, 8)}`,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("imports a parent-first issue batch without requiring the parent to preexist", async () => {
+    const { companyId } = await seedChain();
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    const importRow = (id: string, ref: string, parentId: string | null = null) => ({
+      id,
+      ref,
+      projectId: null,
+      projectWorkspaceId: null,
+      title: ref,
+      description: null,
+      assigneeAgentId: null,
+      status: "backlog" as const,
+      priority: "medium" as const,
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionWorkspaceSettings: null,
+      labelIds: [],
+      monitorNotes: null,
+      monitorScheduledBy: null,
+      parentId,
+    });
+
+    await svc.importIssues(companyId, [
+      importRow(parentId, "Imported parent"),
+      importRow(childId, "Imported child", parentId),
+    ]);
+
+    const child = await db
+      .select({ parentId: issues.parentId })
+      .from(issues)
+      .where(eq(issues.id, childId))
+      .then((rows) => rows[0]);
+    expect(child?.parentId).toBe(parentId);
+  });
+
+  it("rejects a cyclic issue import atomically with delegation_cycle", async () => {
+    const { companyId } = await seedChain();
+    const firstId = randomUUID();
+    const secondId = randomUUID();
+    const importRow = (id: string, ref: string, parentId: string) => ({
+      id,
+      ref,
+      projectId: null,
+      projectWorkspaceId: null,
+      title: ref,
+      description: null,
+      assigneeAgentId: null,
+      status: "backlog" as const,
+      priority: "medium" as const,
+      billingCode: null,
+      assigneeAdapterOverrides: null,
+      executionWorkspaceSettings: null,
+      labelIds: [],
+      monitorNotes: null,
+      monitorScheduledBy: null,
+      parentId,
+    });
+
+    await expect(
+      svc.importIssues(companyId, [
+        importRow(firstId, "Cycle first", secondId),
+        importRow(secondId, "Cycle second", firstId),
+      ]),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: { code: "delegation_cycle" },
+    });
+    const persisted = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(sql`${issues.id} in (${firstId}, ${secondId})`);
+    expect(persisted).toHaveLength(0);
+  });
+
+  it("uses graph-lock then row-lock order for review-policy and ordinary parent updates", async () => {
+    const { companyId, rootId } = await seedChain();
+    const peerId = randomUUID();
+    await db.insert(issues).values({
+      id: peerId,
+      companyId,
+      title: "Peer root task",
+      status: "todo",
+      priority: "medium",
+      issueNumber: 3,
+      identifier: "CHAIN-3",
+    });
+
+    const reviewRowLocked = deferred<void>();
+    const allowReviewUpdate = deferred<void>();
+    const reviewUpdate = db.transaction(async (tx) => {
+      await svc.getByIdForParentMutation(rootId, companyId, tx);
+      reviewRowLocked.resolve();
+      await allowReviewUpdate.promise;
+      return svc.update(
+        rootId,
+        { parentId: peerId, companyGuard: companyId },
+        tx,
+      );
+    });
+
+    await reviewRowLocked.promise;
+    const ordinaryUpdate = svc.update(rootId, {
+      parentId: peerId,
+      companyGuard: companyId,
+    });
+
+    const waitForBlockedLock = async () => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const rows = await db.execute(sql`
+          select 1 from pg_locks where granted = false limit 1
+        `);
+        if (Array.isArray(rows) && rows.length > 0) return;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error("ordinary parent update did not reach a blocked lock");
+    };
+    await waitForBlockedLock();
+    allowReviewUpdate.resolve();
+
+    const results = await Promise.allSettled([reviewUpdate, ordinaryUpdate]);
+    expect(results).toEqual([
+      expect.objectContaining({ status: "fulfilled" }),
+      expect.objectContaining({ status: "fulfilled" }),
+    ]);
+  }, 15_000);
+
   it("ignores closed ancestors created by the agent", async () => {
     const { delegatorId, midId } = await seedChain();
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, midId));
@@ -3110,13 +3374,14 @@ describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
   });
 
   it("terminates on a corrupted parent-graph cycle", async () => {
-    const { delegatorId, rootId, midId } = await seedChain();
+    const { companyId, delegatorId, rootId, midId } = await seedChain();
     // Corrupt the graph: root's parent points back at mid.
     await db.update(issues).set({ parentId: midId }).where(eq(issues.id, rootId));
 
     const found = await svc.findOpenAncestorCreatedByAgent(midId, delegatorId);
     expect(found?.id).toBe(midId);
     expect(await svc.findOpenAncestorCreatedByAgent(midId, randomUUID())).toBeNull();
+    expect(await svc.wouldCreateParentCycle(companyId, randomUUID(), midId)).toBe(false);
   });
 });
 

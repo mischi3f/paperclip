@@ -13,6 +13,7 @@ import {
   bigint,
   boolean,
   check,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { projects } from "./projects.js";
@@ -37,7 +38,7 @@ export const issues = pgTable(
     projectId: uuid("project_id").references(() => projects.id),
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
-    parentId: uuid("parent_id").references((): AnyPgColumn => issues.id),
+    parentId: uuid("parent_id"),
     title: text("title").notNull(),
     titleNeedsGeneration: boolean("title_needs_generation").notNull().default(false),
     description: text("description"),
@@ -103,6 +104,11 @@ export const issues = pgTable(
       and ${table.status} not in ('done', 'cancelled')
     )`),
     companyIdUq: unique("issues_company_id_uq").on(table.companyId, table.id),
+    companyParentFk: foreignKey({
+      columns: [table.companyId, table.parentId],
+      foreignColumns: [table.companyId, table.id],
+      name: "issues_company_parent_fk",
+    }),
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
     companyHarnessKindIdx: index("issues_company_harness_kind_idx").on(table.companyId, table.harnessKind),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(

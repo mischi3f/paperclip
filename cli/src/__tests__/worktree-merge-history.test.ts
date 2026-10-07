@@ -205,6 +205,32 @@ describe("worktree merge history planner", () => {
     });
   });
 
+  it("rejects a self-parent issue instead of planning a cyclic history import", () => {
+    const selfParent = makeIssue({
+      id: "issue-self",
+      identifier: "PAP-44",
+      parentId: "issue-self",
+    });
+
+    expect(() =>
+      buildWorktreeMergePlan({
+        companyId: "company-1",
+        companyName: "Paperclip",
+        issuePrefix: "PAP",
+        previewIssueCounterStart: 500,
+        scopes: ["issues"],
+        sourceIssues: [selfParent],
+        targetIssues: [],
+        sourceComments: [],
+        targetComments: [],
+        targetAgents: [],
+        targetProjects: [],
+        targetProjectWorkspaces: [],
+        targetGoals: [{ id: "goal-1" }] as any,
+      }),
+    ).toThrow(/parent cycle.*issue-self/i);
+  });
+
   it("clears missing references and coerces in_progress without an assignee", () => {
     const plan = buildWorktreeMergePlan({
       companyId: "company-1",
