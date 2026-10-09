@@ -175,6 +175,21 @@ test("bundled package staging materializes workspace dependency versions", () =>
   });
 });
 
+test("bundled package staging preserves heterogeneous workspace dependency versions", () => {
+  const staged = materializePublishManifest(
+    {
+      name: "@paperclipai/server",
+      version: "0.3.1",
+      dependencies: { "@paperclipai/plugin-sdk": "workspace:*" },
+    },
+    { "@paperclipai/plugin-sdk": "1.0.0" },
+  );
+
+  assert.deepEqual(staged.dependencies, {
+    "@paperclipai/plugin-sdk": "1.0.0",
+  });
+});
+
 test("bundled package staging installs only dependencies included in the tarball", () => {
   const publishManifest = {
     name: "@paperclipai/db",
