@@ -425,7 +425,11 @@ test("npm builds use corepack instead of requiring a global pnpm", () => {
   assert.doesNotMatch(buildNpmScript, /^\s*pnpm -r typecheck/m);
 });
 
-test("npm builds stage root skills for the server package", () => {
+test("npm builds stage generated inputs for the server package", () => {
+  assert.match(
+    buildNpmScript,
+    /PAPERCLIP_RELEASE_REUSE_UI_DIST=1 bash "\$REPO_ROOT\/scripts\/prepare-server-ui-dist\.sh"/,
+  );
   assert.match(buildNpmScript, /rm -rf "\$REPO_ROOT\/server\/skills"/);
   assert.match(
     buildNpmScript,

@@ -77,7 +77,8 @@ node "$REPO_ROOT/scripts/prepare-npm-readme.mjs" \
   "$CLI_DIR/README.md" \
   "$README_ASSET_REF"
 
-# Stage the root skills for source installs that package the server directly.
+# Stage generated server package inputs for source installs.
+PAPERCLIP_RELEASE_REUSE_UI_DIST=1 bash "$REPO_ROOT/scripts/prepare-server-ui-dist.sh"
 rm -rf "$REPO_ROOT/server/skills"
 cp -r "$REPO_ROOT/skills" "$REPO_ROOT/server/skills"
 
