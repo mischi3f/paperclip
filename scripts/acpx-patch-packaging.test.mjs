@@ -425,6 +425,14 @@ test("npm builds use corepack instead of requiring a global pnpm", () => {
   assert.doesNotMatch(buildNpmScript, /^\s*pnpm -r typecheck/m);
 });
 
+test("npm builds stage root skills for the server package", () => {
+  assert.match(buildNpmScript, /rm -rf "\$REPO_ROOT\/server\/skills"/);
+  assert.match(
+    buildNpmScript,
+    /cp -r "\$REPO_ROOT\/skills" "\$REPO_ROOT\/server\/skills"/,
+  );
+});
+
 
 test("installed ACPX runtime persists and restores optional goal capabilities", () => {
   const requireRunner = createRequire(new URL("../packages/paperclip-runner/package.json", import.meta.url));

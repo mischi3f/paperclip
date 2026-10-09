@@ -77,6 +77,10 @@ node "$REPO_ROOT/scripts/prepare-npm-readme.mjs" \
   "$CLI_DIR/README.md" \
   "$README_ASSET_REF"
 
+# Stage the root skills for source installs that package the server directly.
+rm -rf "$REPO_ROOT/server/skills"
+cp -r "$REPO_ROOT/skills" "$REPO_ROOT/server/skills"
+
 # ── Step 6: Summary ───────────────────────────────────────────────────────────
 BUNDLE_SIZE=$(wc -c < "$DIST_DIR/index.js" | xargs)
 echo "  [6/6] Build verification..."
